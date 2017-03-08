@@ -9,17 +9,24 @@
 class HTJSON
 {
     /**
-     * Parses the given html and returns JSON
+     * Separator between tags
+     *
+     * @var string
+     */
+    private static $SEPARATOR = "\n";
+
+    /**
+     * Encodes the given html and returns JSON
      *
      * @param string $html  HTML to parse
      * @return array
      */
-    public function parseHTML($html)
+    public static function encodeHTML($html)
     {
         $parsed = [];
 
         // normalize our html
-        $html = $this->normalizeHTML($html);
+        $html = self::normalizeHTML($html);
 
         // break up further
         $htmlParts = explode("\n", $html);
@@ -39,13 +46,19 @@ class HTJSON
             // attempt to match each type of part
             if(preg_match("/<!DOCTYPE ([^>]+)>/i", $part, $matches) && !$ignoreParse) {
                 // DOCTYPE
-                $parsed['doctype'] = $matches[1];
+                $parsed[] = [
+                    'tag'   => '!DOCTYPE',
+                    'properties'   => [
+                        $matches[1]
+                    ],
+                    'type'  => 'self-closing'
+                ];
 
             } else if(preg_match("/^<\s*([a-z0-9]+)(\s+.*)?\/>$/i", $part, $matches) && !$ignoreParse) {
                 // Self Closing Tag
                 if(count($matches) >= 3) {
                     // possible properties
-                    $properties = $this->parseProperties($matches[2]);
+                    $properties = self::parseProperties($matches[2]);
 
                 } else {
                     // no properties
@@ -73,7 +86,7 @@ class HTJSON
                 // Normal Tag
                 if(count($matches) >= 3) {
                     // possible properties
-                    $properties = $this->parseProperties($matches[2]);
+                    $properties = self::parseProperties($matches[2]);
 
                 } else {
                     // no properties
@@ -88,7 +101,7 @@ class HTJSON
                     'properties'    => $properties,
                 ];
 
-                if($this->isTagVoid($tag)) {
+                if(self::isTagVoid($tag)) {
                     // void tag, add as is
                     $entry['type']  = 'void';
                     if(count($activeEntries) > 0) {
@@ -128,7 +141,7 @@ class HTJSON
                         // Self Closing Tag
                         if(count($closingMatches) >= 3) {
                             // possible properties
-                            $properties = $this->parseProperties($closingMatches[2]);
+                            $properties = self::parseProperties($closingMatches[2]);
 
                         } else {
                             // no properties
@@ -246,7 +259,8 @@ class HTJSON
                     array_push($activeEntries, [
                         'tag'           => '--comment--',
                         'properties'    => [],
-                        'content'       => ""
+                        'content'       => "",
+                        'type'          => 'normal' // normal tag
                     ]);
 
                     // indicate we are now ignoring standard parsing rules until we close out...
@@ -270,7 +284,128 @@ class HTJSON
 
     }
 
-    private function isTagVoid($tag)
+    /**
+     * Decodes the given data and returns a document
+     *
+     * @param array $data
+     * @return string
+     */
+    public static function decodeHTML(array $data)
+    {
+        return self::_decode($data);
+
+    }
+
+    /**
+     * Internally decodes part of a site from json
+     *
+     * @param array $data   Data to decode
+     * @return string
+     * @throws Exception
+     */
+    private static function _decode(array $data)
+    {
+        $contents = "";
+
+        foreach ($data as $entry) {
+            // decode this part
+
+            if (!isset($entry['type'])) {
+                throw new Exception("Missing type for entry: " . json_encode($entry));
+
+            }
+
+            $type = $entry['type'];
+
+            // decode properties
+            $properties = isset($entry['properties']) ? self::decodeProperties($entry['properties']) : "";
+
+            // check for raw contents
+            $raw = isset($entry['contents']) ? $entry['contents']."\n" : '';
+
+            if ($type == 'normal') {
+
+                if(!isset($entry['content'])) {
+                    throw new Exception("Missing content for entry: ".json_encode($entry));
+
+                }
+                $content = $entry['content'];
+
+                $tag = $entry['tag'];
+
+                if(is_array($content)) {
+                    // decode
+                    $content = self::_decode($content);
+
+                }
+
+                if($tag != '--comment--') {
+                    // normal
+                    $contents .= "<{$tag}{$properties}>".self::$SEPARATOR. $content ."{$raw}</{$tag}>".self::$SEPARATOR;
+
+                } else {
+                    // comment
+                    $contents .= "<!--".self::$SEPARATOR. $content ."{$raw}-->".self::$SEPARATOR;
+
+                }
+
+            } else if ($type == 'self-closing') {
+                // self closing
+                $contents .= "<{$entry['tag']}{$properties}/>".self::$SEPARATOR;
+
+            } else if($type == 'void') {
+                // void
+                $contents .= "<{$entry['tag']}{$properties}>".self::$SEPARATOR;
+
+            } else if ($type == 'rubbish') {
+                // garbage
+                if(!isset($entry['content'])) {
+                    throw new Exception("Missing content for entry: ".json_encode($entry));
+
+                }
+                $content = $entry['content'].self::$SEPARATOR;
+
+                $contents .= $content;
+
+            } else {
+                throw new Exception("Unknown type passed '{$type}'");
+
+            }
+
+
+        }
+
+
+        return $contents;
+
+    }
+
+    /**
+     * Decodes a set of properties to return
+     *
+     * @param array $properties Properties to decode
+     * @return string
+     */
+    private static function decodeProperties(array $properties)
+    {
+        $propertiesString = "";
+        foreach($properties as $key => $value) {
+            if(is_int($key)) {
+                // add only value
+                $propertiesString.=" {$value}";
+
+            } else {
+                $propertiesString .= ' ' . $key . '="' . $value . '"';
+
+            }
+
+        }
+
+        return $propertiesString;
+
+    }
+
+    private static function isTagVoid($tag)
     {
         return (
             $tag == 'input' ||
@@ -299,7 +434,7 @@ class HTJSON
      * @param string $properties    Properties to parse
      * @return array
      */
-    private function parseProperties($properties)
+    private static function parseProperties($properties)
     {
         $properties = trim($properties);
 
@@ -331,7 +466,7 @@ class HTJSON
 
     }
 
-    private function normalizeHTML($html)
+    private static function normalizeHTML($html)
     {
         // normalize breaks after tags
         $html = preg_replace("/\\n\\n/m", "\n", $html);
